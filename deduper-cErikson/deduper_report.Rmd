@@ -1,0 +1,160 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Deduper Part 1
+
+## Problem 
+Remove PCR duplicates from RNAseq containg UMIs or randomer data using a genome reference. This involes using a SAM file of aligned RNAseq to genome, for this we are able to find the starting position(acounting for soft-clipping) for each read. From this we will be able to find reads with matching sequences. These matching reads UMIs will then compared to a known UMI list and each others UMI/rand, matching UMI/rands will then be collaspsed. Taking paired end data into account if for example read 1 has multiple matching positions and UMI/rand, but read 2 has differing pos and/or UMI/rand, then reads are uniqe and are not collapsed.  
+
+## Examples
+
+```{python, eval=F}
+import random as rn
+genome=''
+for i in range(1):
+	genome+='\n'
+	for j in range(15):
+		genome+=rn.choice('ATCG')
+print(genome)
+```
+```{python, eval=F}
+seq='ACGCAGAGTTGGTGA'
+comp={'A':'T', 'T':'A', 'G':'C', 'C':'G'}
+revcomp=''
+for s in seq[::-1]:
+	revcomp+=comp[s]
+print(revcomp)
+```
+**"Genome"**
+```
+1   5    10   15   20   25   30
+GCATCAAAAAGAAGCTTAGAGGTACGAACG 1
+TGGCAGTTCTCCAAATGTTCAGATAGTCAG 31
+CTTATACATCTAGTTAGAGCCAGCTAACAG 61
+CGACTTATGTTGCCGCAGTTATAAATTCTC 91
+ACGCAGAGTTGGTGATTCCGGTGTGTCCAA 121
+GGGGTTATCCCAGATGAAGATATGGGTGCA 151
+CAACGTTGAAACGTCATTAACAAGGACCCG 181 
+ACTTGTGTATATTGAAGATCTGTGTCAGGT 211
+CAAACATCGCGGGTTAGGGGTCAACTTTAG 241
+ATCTCTCGGTACTTGCCAGGATCCATCTGC 271
+AAAGGCAGCTAAAGAGATAGTGGGTGCGAT 301
+ATCTGAATTTGCGGGTAAGCTTAGATCGCG 331
+AAGAGGTAGATTAGCAACTCCGGAGCCACC 361
+CAGTTTGTATGCTCGATCCCACCGTGCTGA 391
+AACAGGAACTGAACAAAGTTAAGACGGCAC 421
+GCCCCCACTGTGCGGTCTTAGAGCTGACCG 451
+TGGTCCAACCACCAAATGAAAATTGGCAAT 481
+TGAAAGGACCGTATTAAACATTCTAGCATT 511
+AAAAGCCCCCCACTGTTAGAGTATGAAGAA 541
+GATCCAGAGGCATTCAGTTTTGGATCTGTA 571
+```
+**Single-end**
+Note: If using for testing, switch up data for each example pair
+```
+QNAME	FLAG	RNAME	POS	MAPQ	CIGAR	MRNM/RNEXT	MPOS/PNEXT ISIZE/TLEN SEQ	QUAL	TAGS
+
+# non-duplicate
+read1:GCTA	0	chr1	3	37	2S11M2S	=	525	15	GCATCAAAAAGAAGC	0;==-==9;>>>>>=	
+read2:TACG	0	chr1	7	37	2S11M2S	=	525	15	CAAAAAGAAGCTTAG	0;==-==9;>>>>>=	
+
+# simple duplicate
+read3:TCGA	0	chr1	33	37	2S11M2S	=	525	15	TGGCAGTTCTCCAAA	0;==-==9;>>>>>=	
+read4:TCGA	0	chr1	33	37	2S11M2S	=	525	15	AGGCAGTTCTCCAAA	0;==-==9;>>>>>=	
+
+# duplicate seq, diff UMI
+read3:TCGA	0	chr1	33	37	2S11M2S	=	525	15	TGGCAGTTCTCCAAA	0;==-==9;>>>>>=	
+read4:AGCT	0	chr1	33	37	2S11M2S	=	525	15	AGGCAGTTCTCCAAA	0;==-==9;>>>>>=	
+
+# complex duplicate 
+read5:TCGA	0	chr1	63	37	2S11M2S	=	525	15	GTTATACATCTAGTT	0;==-==9;>>>>>=	
+read6:TCGA	0	chr1	65	37	5S8M2S	=	525	15	CAAATACATCTAGTT	0;==-==9;>>>>>=	
+
+# rev complex duplicate
+read5:CGTA	16	chr1	93 	37	2S11M2S	=	525	15	GTTATACATCTAGTT	0;==-==9;>>>>>=	
+read6:CGTA	16	chr1	93	37	5S8M2S	=	525	15	CAAATACATCTAGTT	0;==-==9;>>>>>=	
+
+# same pos, diff strand
+read9:TCGA	0	chr1	136	37	13M2S	=	525	15	GATAATCCGTAGCAG	0;==-==9;>>>>>=	
+read10:GCTA	16	chr1	136 37	13M2S	=	525	15	ATTCCGGTGTGTCCA 0;==-==9;>>>>>=	
+
+# same pos(and UMI), diff chr
+read7:CGTA	0	chr1	502	37	2S11M2S	=	525	15	CGGGTCTGACCTGAG	0;==-==9;>>>>>=	
+read8:CGTA	0	chr2	505 37	5S8M2S	=	525	15	ATTTGAGCGCTCGCA	0;==-==9;>>>>>=	
+```
+
+**Expected output**
+```
+# non-duplicate
+read1:GCTA	0	chr1	3	37	2S11M2S	=	525	15	GCATCAAAAAGAAGC	0;==-==9;>>>>>=	
+read2:TACG	0	chr1	7	37	2S11M2S	=	525	15	CAAAAAGAAGCTTAG	0;==-==9;>>>>>=	
+
+# simple duplicate
+read3:TCGA	0	chr1	33	37	2S11M2S	=	525	15	TGGCAGTTCTCCAAA	0;==-==9;>>>>>=	
+
+# duplicate seq, diff UMI
+read3:TCGA	0	chr1	33	37	2S11M2S	=	525	15	TGGCAGTTCTCCAAA	0;==-==9;>>>>>=	
+read4:AGCT	0	chr1	33	37	2S11M2S	=	525	15	AGGCAGTTCTCCAAA	0;==-==9;>>>>>=	
+
+# complex duplicate 
+read5:TCGA	0	chr1	63	37	2S11M2S	=	525	15	GTTATACATCTAGTT	0;==-==9;>>>>>=	
+
+# rev complex duplicate
+read5:CGTA	16	chr1	93 	37	2S11M2S	=	525	15	GTTATACATCTAGTT	0;==-==9;>>>>>=	
+
+# same pos, diff strand
+read9:TCGA	0	chr1	136	37	13M2S	=	525	15	GATAATCCGTAGCAG	0;==-==9;>>>>>=	
+read10:GCTA	16	chr1	136 37	13M2S	=	525	15	ATTCCGGTGTGTCCA 0;==-==9;>>>>>=	
+
+# same pos(and UMI), diff chr
+read7:CGTA	0	chr1	502	37	2S11M2S	=	525	15	CGGGTCTGACCTGAG	0;==-==9;>>>>>=	
+read8:CGTA	0	chr2	505 37	5S8M2S	=	525	15	ATTTGAGCGCTCGCA	0;==-==9;>>>>>=	
+```
+
+## Pseudocode
+
+```
+samtools_sort samfile > sort_sam
+```
+
+```
+def yeild_sam(afile):
+'Yeild a line which has been split by feild of the sam file, can be dict or list'
+ file -> line{pos:232, qname:'Read1', flag:123...}
+ yield line
+    	
+def adj_soft(line):
+'Adjust the pos in the line according to soft_clip in Cigar and return line with adj_pos'
+line -> adj_line
+return adj_line
+
+def sam_meta_flag_is_sorted(sam):
+'Check if the meta data show file has been sorted by pos'
+sam -> T or F
+return sorted
+
+# MAIN
+if sam_meta_flag_is_sorted() is False:
+	except('not sorted')
+known_umis=read_file(known)
+
+for entry in yeild_sam(file):
+	if adj_soft(new)[pos] is not in seen_data[][pos]: #if new pos
+		seen_data=set()  # Clear seen data
+		seen_data.add(adj_soft(entry)) # add new
+		write(entry) #write out
+	elif adj_soft(new)[pos] is in seen_data[][pos]: # if new is same as old
+		if is_fwd(new) is not in seen_data[][fwd] or new[chr] is not in seen_data[][chr]: # if new is a diff strand or chr
+			write(entry) #write out
+			seen_data.add(adj_soft(entry)) # add new
+		elif new[UMI] is not in seen_data[][UMI] and new[UMI] is in known_umis: # else if new UMI
+			write(entry) # write out
+			seen_data.add(adj_soft(entry)) # add new
+			proper_dups+=1 # count proper duplicates 
+		else:
+			pcr_dups+=1 # else count pcr duplicates/failed umis
+```
+
